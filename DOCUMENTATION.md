@@ -45,7 +45,7 @@ assign data_in = shift_in;
 
 The synchronized SPI signals allow the design to derive the following control events:
 
-- **`sclk_rising`** — SCLK transitions from `0`  to `1`
+- **`sclk_rising`** — SCLK transitions from `0` to `1`
 - **`sclk_falling`** — SCLK transitions from `1` to `0`
 - **`cs_active`** — chip-select is asserted (`cs_n == 0`)
 
@@ -58,6 +58,7 @@ These signals determine when bits are received or transmitted.
 On each rising edge of the internal clock (or falling edge of reset):
 
 #### **1. Reset Condition**
+
 If `rst_n == 0`, all internal registers are set to known values:
 
 - `byte_cnt` resets to `0`
@@ -65,6 +66,7 @@ If `rst_n == 0`, all internal registers are set to known values:
 - `miso_reg` outputs `0`
 
 #### **2. Idle State (`cs_active == 0`)**
+
 If reset is not asserted and chip-select is inactive:
 
 - The byte counter is cleared.
@@ -80,6 +82,7 @@ This stage prepares the slave before the SPI master begins a transfer.
 When a transaction is active, three possible events occur:
 
 #### **1. `sclk_rising` — Receiving a bit on MOSI**
+
 On the rising edge of SCLK:
 
 - `shift_in` shifts left by one bit.
@@ -89,6 +92,7 @@ On the rising edge of SCLK:
 This corresponds to **data reception**.
 
 #### **2. `sclk_falling` — Sending a bit on MISO**
+
 On the falling edge of SCLK:
 
 - `shift_out` shifts left.
@@ -98,6 +102,7 @@ On the falling edge of SCLK:
 This performs **data transmission**.
 
 #### **3. End-of-Byte Handling (when `byte_cnt == 7`)**
+
 On the rising edge when the last bit of the byte has been received:
 
 - `shift_out` is reloaded with the next `data_out`.
@@ -124,3 +129,89 @@ This signal is essential for the component that decodes or processes the receive
 ---
 
 ### INSTRUCTION DECODER
+
+# Implementation Notes for `regs.v` + `counter.v`
+
+## Register Block Implementation (`regs.v`)
+
+This section describes only the implementation details specific to my design, not the generic architecture already provided in the assignment.
+
+### Internal Structure
+
+All user-visible registers (`PERIOD`, `COUNTER_EN`, `COMPARE1/2`, `PRESCALE`, `UPNOTDOWN`, `PWM_EN`, `FUNCTIONS`) are stored using Verilog `reg` variables with their exact logical width.  
+Two additional internal elements are used:
+
+- `count_reset_sh` – a 2-bit internal countdown for generating the two‑cycle active pulse for `COUNTER_RESET`.
+- `data_read` – combinational multiplexer output for read operations.
+
+### Addressing Choices
+
+- The module receives a 6-bit address.
+- 16-bit registers are split into LSB/MSB across consecutive addresses.
+- Unused addresses have no effect on write and return `0x00` on read.
+
+### COUNTER_RESET Mechanism
+
+Writing to address `0x07` loads `count_reset_sh = 2'b11`, which decrements each clock.  
+`count_reset` is high whenever the countdown is non‑zero, producing an exact two‑cycle pulse.
+
+### Write Logic Details
+
+Only meaningful bits are stored:
+
+- Single-bit registers (`en`, `upnotdown`, `pwm_en`) use `data_write[0]`
+- `FUNCTIONS` uses `data_write[1:0]`
+- 16‑bit registers follow LSB/MSB splitting.
+
+### Read Logic Details
+
+The read path is a combinational multiplexer:
+
+- 16‑bit registers return LSB/MSB halves
+- Single‑bit registers are zero‑extended
+- `COUNTER_RESET` always returns `0x00`
+- Invalid addresses return `0x00`
+
+### Reset Behaviour
+
+Registers initialize to deterministic defaults:  
+counter disabled, prescaler zero, comparators zero, PWM disabled, up-count direction.
+
+---
+
+## Counter Implementation (`counter.v`)
+
+### Internal State and Prescaler
+
+Two 16‑bit registers:
+
+- `count_val` – main up/down counter
+- `presc_cnt` – internal prescaler counter
+
+A combinational wire computes the prescaler target:
+
+```
+prescale_target = 1 << prescale;
+```
+
+This implements frequency division by `2^PRESCALE`.
+
+### Reset and Enable Behaviour
+
+- Asynchronous reset clears both registers.
+- `count_reset` has highest priority and resets only counter-related registers.
+- When `en = 0`, `count_val` holds its value while `presc_cnt` resets.
+
+### Prescaler and Counting Logic
+
+If `PRESCALE = 0`, the counter ticks every clock.  
+If `PRESCALE > 0`, the prescaler increments until reaching `prescale_target − 1`, then resets and produces one tick.
+
+### Up/Down and Period Handling
+
+On each tick:
+
+- **Up-counting**: increment until reaching `period`, then wrap to `0`
+- **Down-counting**: decrement until `0`, then wrap to `period`
+
+`COMPARE1` and `COMPARE2` are not used in this module; they are consumed by the PWM block.
