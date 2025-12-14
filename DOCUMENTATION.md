@@ -326,137 +326,43 @@ On each tick:
 
 `COMPARE1` and `COMPARE2` are not used in this module; they are consumed by the PWM block.
 
-## PWM GENERATOR (`pwm_gen.v`)
+## PWM GENERATOR IMPLEMENTATION (`pwm_gen.v`)
 
-### **1. Bit Extraction from `functions` Register**
+The PWM generator module is designed as a **purely combinational logic block**. It determines the state of the output signal (`pwm_out`) instantaneously based on the current value of the counter (`count_val`) and the configuration registers (`compare1`, `compare2`, `functions`).
 
+### **Operational Logic**
+
+The module uses an `always @(*)` block to evaluate conditions in a prioritized order.
+
+#### **1. Configuration Extraction**
+The `functions` register bits are mapped to readable wire names to determine the operating mode:
 ```verilog
-wire align_left_right = functions[0];
-wire aligned_mode = functions[1];
+wire align_mode  = functions[1]; // aligned / unaligned
+wire align_right = functions[0]; // left / right aligned
 ```
 
-- `align_left_right` controls whether the signal is left-aligned or right-aligned.
-- `aligned_mode` controls the PWM operating mode (aligned or unaligned).
+#### **2. Reset and Safety Priorities**
+Before generating anything, the module enforces some conditions:
 
----
+* **Asynchronous Reset:** If `rst_n` is low, `pwm_out` is forced to `0`.
+* **Enable Signal:** If `pwm_en` is low, the output is held at `0`.
+* **Equality Check:** If `compare1 == compare2`, the output is forced to `0` to prevent undefined behavior in unaligned mode.
 
-### **2. Overflow/Underflow Detection**
+#### **3. Signal Generation Modes**
+If the device is enabled, the logic selects one of the modes based on the alignment settings provided in the FUNCTIONS register:
 
-```verilog
-wire overflow_event = (count_val == period);
-wire wrap_event = (count_val == 0 && last_count_val == period);
-wire overflow_underflow = overflow_event || wrap_event;
-```
+* **Left Aligned (`functions` = `00`):**
+    * The signal is high from the start of the period.
+    * **Logic:** `pwm_out = 1` when `count_val <= compare1`.
+    * **Edge case:** If `compare1` is 0, the output remains low.
 
-- `overflow_event` = 1 when the counter reaches the `PERIOD` value.
-- `wrap_event` = 1 when the counter has wrapped from `PERIOD` to 0.
-- `overflow_underflow` = combines both events and marks **the beginning of a new period**.
+* **Right Aligned (`functions` = `01`):**
+    * The signal is high towards the end of the period.
+    * **Logic:** `pwm_out = 1` when `count_val >= compare1`.
 
----
+* **Unaligned Mode (`functions` = `1x`):**
+    * This mode generates a pulse somewhere in the middle of the period, defined by start and stop thresholds.
+    * **Logic:** `pwm_out = 1` when `count_val >= compare1` and `count_val < compare2`.
 
-### **3. Storing Previous Counter State**
-
-```verilog
-reg [15:0] last_count_val;
-reg last_overflow_underflow;
-```
-
-- The counter value and overflow state from the previous step are preserved to detect **the exact moment when a new period begins**.
-
----
-
-### **4. Retaining Active Configurations at Period Start**
-
-```verilog
-reg[15:0] active_period;
-reg[15:0] active_compare1;
-reg[15:0] active_compare2;
-reg active_align_left_right;
-reg active_aligned_mode;
-```
-
-- These registers store the current configuration that will be used **until the next overflow**.
-- Update occurs only **on the rising edge of overflow/underflow**:
-
-```verilog
-if (overflow_underflow && !last_overflow_underflow) begin
-    active_period <= period;
-    active_compare1 <= compare1;
-    active_compare2 <= compare2;
-    active_align_left_right <= align_left_right;
-    active_aligned_mode <= aligned_mode;
-end
-```
-
----
-
-### **5. PWM Signal Generation**
-
-#### **5.1. PWM Disabled**
-
-```verilog
-if (!pwm_en)
-    pwm_out <= pwm_out;
-```
-
-- If `pwm_en` = 0, the PWM signal remains in its current state.
-
----
-
-#### **5.2. Aligned Mode (`aligned_mode == 0`)**
-
-- **Left-aligned (`align_left_right == 0`)**
-
-```verilog
-if (overflow_underflow && !last_overflow_underflow)
-    pwm_out <= 1'b1;
-else if (count_val == active_compare1)
-    pwm_out <= 1'b0;
-```
-
-- At the beginning of the period &rarr; `pwm_out` = 1
-- When the counter reaches `COMPARE1` &rarr; `pwm_out` = 0
-
-- **Right-aligned (`align_left_right == 1`)**
-
-```verilog
-if (overflow_underflow && !last_overflow_underflow)
-    pwm_out <= 1'b0;
-else if (count_val == active_compare1)
-    pwm_out <= 1'b1;
-```
-
-- At the beginning of the period &rarr; `pwm_out` = 0
-- At `COMPARE1` &rarr; `pwm_out` = 1
-
----
-
-#### **5.3. Unaligned Mode (`aligned_mode == 1`)**
-
-```verilog
-if (overflow_underflow && !last_overflow_underflow)
-    pwm_out <= 1'b0;
-else if (count_val == active_compare1)
-    pwm_out <= 1'b1;
-else if (count_val == active_compare2)
-    pwm_out <= 1'b0;
-```
-
-- At the beginning of the period → `pwm_out` = 0
-- At `COMPARE1` &rarr; `pwm_out` = 1
-- At `COMPARE2` &rarr; `pwm_out` = 0
-
----
-
-### **6. Reset and Synchronization**
-
-- At asynchronous reset (`rst_n == 0`) &rarr; all registers and the PWM signal are initialized to 0.
-- All operations occur on the rising edge of the `clk` clock.
-
----
-
-### **7. Summary**
-
-- The code synchronizes PWM configurations at **the beginning of the period**.
-- Supports **left/right aligned** and **aligned/unaligned mode**.
-- PWM management is based on `COMPARE1` and `COMPARE2` values and counter state.
+#### **Note**
+The `period` signal is unused in this block because the cycle duration is managed entirely by the `counter.v` module. The generator relies solely on `count_val` and the comparison thresholds to determine the output state.
