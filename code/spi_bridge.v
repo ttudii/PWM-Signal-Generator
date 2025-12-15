@@ -48,7 +48,7 @@ module spi_bridge (
         end
     end
 
-    // Drive MISO on falling edge
+    // put the next output bit on MISO so it is stable before the master samples it
     always @(negedge sclk or negedge rst_n) begin
         if (!rst_n)
             miso_reg <= 1'b0;
