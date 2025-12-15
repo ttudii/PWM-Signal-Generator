@@ -1,130 +1,123 @@
 # System Documentation
 
-## COMMUNICATION BRIDGE
+## **COMMUNICATION BRIDGE**
 
-```
-reg [1:0] sclk_sync, cs_sync;
-```
-
-The registers `sclk_sync` and `cs_sync` implement **double-flop synchronization** for the external SPI signals (`sclk` and `cs_n`). Even if the SPI master and the internal peripheral operate at similar frequencies, the clocks are not phase-aligned, meaning the incoming signals must be synchronized to the internal `clk` domain to prevent metastability.
-
-Each synchronizer register stores **two bits**, corresponding to the two most recently sampled values of the external signal. They are initialized to:
-
-- `sclk_sync = 2'b00`
-- `cs_sync = 2'b11` (since chip select is active-low)
-
-On every `posedge clk`, the new sampled value is appended:
-
-```
-sclk_sync <= {sclk_sync[0], sclk};
-cs_sync   <= {cs_sync[0], cs_n};
-```
-
-This enables detection of **rising edges**, **falling edges**, and **chip-select activation** through simple bit-pattern comparisons.
-
----
-
-The SPI logic uses a 3-bit register `byte_cnt` to track the number of bits received within the current byte. Since the system processes only **one byte at a time**, this counter asserts completion once all 8 bits have been shifted in.
-
-The module also contains two 8-bit shift registers:
-
-- `shift_in` — stores the data received from MOSI (and is exposed via `data_in`)
-- `shift_out` — contains the byte to be transmitted on MISO
-
-```
-reg [2:0] byte_cnt;
-reg [7:0] shift_in, shift_out;
+```verilog
 reg miso_reg;
-assign miso = miso_reg;
-assign data_in = shift_in;
+reg byte_sync_reg;
+reg [7:0] data_in_reg;
 ```
 
----
+These registers implement the **output interface of the SPI bridge**.  
+This design **explicitly separates the SPI clock domain (`sclk`) from the internal system clock domain (`clk`)**, ensuring correct operation even when the two clocks are equal, close in frequency, or asynchronous.
 
-### **SPI Timing Logic: `sclk_rising`, `sclk_falling`, and `cs_active`**
+### **SPI Clock Domain Registers**
 
-The synchronized SPI signals allow the design to derive the following control events:
+```verilog
+reg [2:0] bit_cnt;
+reg [7:0] shift_reg;
+reg [7:0] captured_data;
+reg [7:0] byte_counter;
+```
 
-- **`sclk_rising`** — SCLK transitions from `0` to `1`
-- **`sclk_falling`** — SCLK transitions from `1` to `0`
-- **`cs_active`** — chip-select is asserted (`cs_n == 0`)
+These registers operate exclusively in the **SPI clock domain**:
 
-These signals determine when bits are received or transmitted.
+- **`bit_cnt`** — tracks the current bit position (0–7) within a byte  
+- **`shift_reg`** — shift register used to accumulate incoming **MOSI** bits  
+- **`captured_data`** — stores the completed byte after all 8 bits are received  
+- **`byte_counter`** — increments once per received byte and acts as a safe event indicator for clock-domain crossing  
 
----
+### **Receiving Data (MOSI) — `posedge sclk`**
 
-### **Main State Machine (`always @(posedge clk or negedge rst_n)`)**
+```verilog
+always @(posedge sclk or negedge rst_n)
+```
 
-On each rising edge of the internal clock (or falling edge of reset):
+Incoming SPI data is captured on the **rising edge of `sclk`**, following standard SPI timing.
 
-#### **1. Reset Condition**
+### Operation
 
-If `rst_n == 0`, all internal registers are set to known values:
+- On reset: all SPI-domain registers are cleared.
+- When **`cs_n` is high** (inactive): `bit_cnt` is reset.
+- When **`cs_n` is low** (active):
+  - `shift_reg` shifts left by one bit;  
+  - The current `mosi` value is inserted into the LSB;
+  - `bit_cnt` increments.
 
-- `byte_cnt` resets to `0`
-- `shift_in` and `shift_out` clear to `0`
-- `miso_reg` outputs `0`
+When **`bit_cnt == 7`**:
 
-#### **2. Idle State (`cs_active == 0`)**
+- `{shift_reg[6:0], mosi}` is stored in **`captured_data`**;
+- **`byte_counter`** increments to indicate a completed byte;
+- `bit_cnt` resets for the next byte.
 
-If reset is not asserted and chip-select is inactive:
+This guarantees **accurate byte reconstruction** in the SPI clock domain.
 
-- The byte counter is cleared.
-- The next transmit byte (`data_out`) is loaded into `shift_out`.
-- The first bit to be transmitted (`data_out[7]`) is prepared in `miso_reg`.
+### **Transmitting Data (MISO) — `negedge sclk`**
 
-This stage prepares the slave before the SPI master begins a transfer.
+```verilog
+always @(negedge sclk or negedge rst_n)
+```
 
----
+Outgoing SPI data is driven on the **falling edge of `sclk`**, ensuring the master samples stable data on the next rising edge.
 
-### **3. Active SPI Transfer (`cs_active == 1`)**
+### Operation
 
-When a transaction is active, three possible events occur:
+- On reset: `miso_reg` is cleared  
+- When **`cs_n` is low**:
+  - The bit at position ``7 - bit_cnt`` from `data_out` is driven onto **`miso_reg`**
 
-#### **1. `sclk_rising` — Receiving a bit on MOSI**
+The expression ``7 - bit_cnt`` ensures **MSB-first transmission**, which is standard for SPI.
 
-On the rising edge of SCLK:
+### **MISO Initialization on Chip-Select Assertion**
 
-- `shift_in` shifts left by one bit.
-- The newest MOSI bit is inserted as the least significant bit.
-- `byte_cnt` increments.
+```verilog
+always @(negedge cs_n or negedge rst_n)
+```
 
-This corresponds to **data reception**.
+This block initializes the MISO line at the **start of every SPI transaction**.
 
-#### **2. `sclk_falling` — Sending a bit on MISO**
+- On reset: `miso_reg` is cleared  
+- When **`cs_n` transitions low**:
+  - `miso_reg` is loaded with `data_out[7]`
 
-On the falling edge of SCLK:
+This guarantees the **first output bit is valid before the first clock edge**.
 
-- `shift_out` shifts left.
-- A `0` is inserted as the LSB.
-- `shift_out[6]` is copied into `miso_reg`.
+### **Clock-Domain Crossing (SPI → Internal `clk`)**
 
-This performs **data transmission**.
+```verilog
+reg [7:0] bc_sync1, bc_sync2, bc_prev;
+```
 
-#### **3. End-of-Byte Handling (when `byte_cnt == 7`)**
+Because **`byte_counter`** is updated in the **SPI clock domain**, it must be safely transferred into the **internal `clk` domain** (master).
 
-On the rising edge when the last bit of the byte has been received:
+This is done using a **two-stage synchronizer** followed by a previous-value register:
 
-- `shift_out` is reloaded with the next `data_out`.
-- `miso_reg` is updated with the new MSB (`data_out[7]`).
+```verilog
+bc_sync1 <= byte_counter;
+bc_sync2 <= bc_sync1;
+bc_prev <= bc_sync2;
+```
 
-This supports continuous multi-byte transfers.
+- **`bc_sync1`** and **`bc_sync2`** safely synchronize the counter;
+- **`bc_prev`** stores the last synchronized value.
 
----
+### **Byte Completion Detection (`byte_sync`)**
 
-### **Byte Completion Signal (`byte_sync`)**
+```verilog
+always @(posedge clk or negedge rst_n)
+```
 
-The final `always` block generates a single-cycle strobe named `byte_sync` using the internal register `byte_sync_reg`.
+This block generates a **single-cycle pulse** when a new SPI byte becomes available.
 
-A pulse is generated when:
+### Logic
 
-- `cs_active == 1`
-- `sclk_rising == 1`
-- `byte_cnt == 7`
+- On reset: all synchronization registers and outputs are cleared.
+- On each `clk` edge: The current synchronized byte counter is compared with its previous value. 
 
-At this moment, the full 8-bit value in `shift_in` is valid and ready for the downstream logic.
+When **`bc_sync2 != bc_prev`**:
 
-This signal is essential for the component that decodes or processes the received SPI byte.
+- **`byte_sync_reg`** is asserted for **one `clk` cycle** (pulse);
+- **`data_in_reg`** is updated with **`captured_data`** (byte read).
 
 ## INSTRUCTION DECODER
 
