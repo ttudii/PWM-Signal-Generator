@@ -27,7 +27,8 @@ reg state;
 
 assign data_out = data_out_reg;
 assign data_write = data_write_reg;
-assign addr = hl_reg ? addr_reg + 6'd1 : addr_reg;
+// assign addr = hl_reg ? addr_reg + 6'd1 : addr_reg;
+assign addr =  addr_reg;
 assign read = read_reg;
 assign write = write_reg;
 
@@ -45,9 +46,9 @@ always @(posedge clk or negedge rst_n) begin
         write_reg  <= 1'b0;
         read_reg <= 1'b0;
 
-        case(state)
-            1'b0: begin
-                if(byte_sync) begin
+        if(byte_sync) begin
+            case(state)
+                1'b0: begin
                     //decode instruction byte
                     rw_reg <= data_in[7];
                     hl_reg <= data_in[6];
@@ -66,10 +67,8 @@ always @(posedge clk or negedge rst_n) begin
                     //movw to DATA
                     state <= 1'b1;
                 end
-            end
 
-            1'b1: begin
-                if (byte_sync) begin
+                1'b1: begin
                     if(rw_reg) begin
                         // write operation - receive data payload
                         data_write_reg <= data_in;
@@ -78,8 +77,8 @@ always @(posedge clk or negedge rst_n) begin
                     //go back to SETUP phase
                     state <= 1'b0;
                 end
-            end
-        endcase
+            endcase
+        end
     end
 end
 

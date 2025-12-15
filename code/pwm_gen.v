@@ -38,7 +38,7 @@ module pwm_gen (
                 if (!align_right) begin // left aligned => high pana la compare1
                     if (compare1 == 16'd0)
                         pwm_out = 1'b0;
-                    else if (count_val <= compare1) semnal high atata timp cat counter <= compare1
+                    else if (count_val <= compare1) //semnal high atata timp cat counter <= compare1
                         pwm_out = 1'b1;
                     else
                         pwm_out = 1'b0;

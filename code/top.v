@@ -1,62 +1,48 @@
-/*
-    DO NOT, UNDER ANY CIRCUMSTANCES, MODIFY THIS FILE! THIS HAS TO REMAIN AS SUCH IN ORDER 
-    FOR THE TESTBENCH PROVIDED TO WORK PROPERLY.
-*/
 module top(
-    // peripheral clock signals
-    input clk,
-    input rst_n,
-    // SPI master facing signals
-    input sclk,
-    input cs_n,
-    input miso,
-    output mosi,
-    // peripheral signals
+    input  clk,
+    input  rst_n,
+    input  sclk,
+    input  cs_n,
+    input  miso,   // master -> slave
+    output mosi,   // slave -> master
     output pwm_out
 );
 
-wire clk;
-wire rst_n;
-
-wire sclk;
-wire cs_n;
-wire miso;
-wire mosi;
-
-wire byte_sync;
-wire[7:0] data_in;
-wire[7:0] data_out;
-wire read;
-wire write;
-wire[5:0] addr;
-wire[7:0] data_read;
-wire[7:0] data_write;
-
-wire[15:0] counter_val;
-wire[15:0] period;
-wire en;
-wire count_reset;
-wire upnotdown;
-wire[7:0] prescale;
-
-wire pwm_en;
-wire[7:0] functions;
-wire[15:0] compare1;
-wire[15:0] compare2;
+wire        byte_sync;
+wire [7:0]  data_in;
+wire [7:0]  data_out;
+wire        read;
+wire        write;
+wire [5:0]  addr;
+wire [7:0]  data_read;
+wire [7:0]  data_write;
+wire [15:0] counter_val;
+wire [15:0] period;
+wire        en;
+wire        count_reset;
+wire        upnotdown;
+wire [7:0]  prescale;
+wire        pwm_en;
+wire [7:0]  functions;
+wire [15:0] compare1;
+wire [15:0] compare2;
 
 spi_bridge i_spi_bridge (
     .clk(clk),
     .rst_n(rst_n),
     .sclk(sclk),
     .cs_n(cs_n),
-    .miso(miso),
-    .mosi(mosi)
+    .mosi(miso),
+    .miso(mosi),
+    .byte_sync(byte_sync),
+    .data_in(data_in),
+    .data_out(data_out)
 );
 
 instr_dcd i_instr_dcd (
     .clk(clk),
     .rst_n(rst_n),
-    .byte_sync(),
+    .byte_sync(byte_sync),
     .data_in(data_in),
     .data_out(data_out),
     .read(read),
